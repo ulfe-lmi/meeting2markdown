@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import base64
-import importlib
 import json
 import mimetypes
 import os
@@ -44,23 +43,16 @@ def run_cmd(cmd: list[str], error_message: str, verbose: bool = False) -> subpro
     return proc
 
 
-def get_ffmpeg_exe() -> str:
-    module = importlib.import_module("imageio_ffmpeg")
-    return module.get_ffmpeg_exe()
+def require_binary(name: str, install_hint: str) -> str:
+    exe = shutil.which(name)
+    if not exe:
+        raise ToolError(f"{name} was not found on PATH. {install_hint}")
+    return exe
 
 
-def probe_audio(path: Path, verbose: bool = False) -> dict[str, Any]:
-    if shutil.which("ffprobe") is None:
-        return {
-            "duration_seconds": 0.0,
-            "size_bytes": int(path.stat().st_size),
-            "codec": "unknown",
-            "sample_rate": 0,
-            "channels": 0,
-            "format_name": "unknown",
-        }
+def probe_audio(path: Path, ffprobe_exe: str, verbose: bool = False) -> dict[str, Any]:
     proc = run_cmd(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+        [ffprobe_exe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
         "Failed to inspect input audio with ffprobe.",
         verbose=verbose,
     )
@@ -285,6 +277,7 @@ def transcribe_chunk(
     language: str,
     known_names: list[str] | None,
     known_refs: list[str] | None,
+    fallback_client: OpenAI | None = None,
     max_retries: int = 3,
 ) -> dict[str, Any]:
     for attempt in range(1, max_retries + 1):
@@ -295,7 +288,7 @@ def transcribe_chunk(
                     "file": fh,
                     "response_format": "diarized_json",
                     "language": language,
-                    "chunking_strategy": {"type": "auto"},
+                    "chunking_strategy": "auto",
                 }
                 if known_names and known_refs:
                     kwargs["known_speaker_names"] = known_names
@@ -316,6 +309,22 @@ def transcribe_chunk(
                     resp = client.audio.transcriptions.create(**kwargs)
             return obj_to_dict(resp)
         except Exception as exc:  # noqa: BLE001
+            if fallback_client is not None:
+                msg = str(exc).lower()
+                if "unsupported content type" in msg or "invalid_json" in msg or "unicode decode error" in msg:
+                    with chunk_path.open("rb") as fh:
+                        kwargs = {
+                            "model": model,
+                            "file": fh,
+                            "response_format": "diarized_json",
+                            "language": language,
+                            "chunking_strategy": "auto",
+                        }
+                        if known_names and known_refs:
+                            kwargs["known_speaker_names"] = known_names
+                            kwargs["known_speaker_references"] = known_refs
+                        resp = fallback_client.audio.transcriptions.create(**kwargs)
+                    return obj_to_dict(resp)
             if attempt == max_retries:
                 raise ToolError(f"Transcription API failed for {chunk_path.name}: {exc}") from exc
             time.sleep(1.5 * attempt)
@@ -353,14 +362,10 @@ def main() -> int:
         if "OPENAI_API_KEY" not in os.environ:
             raise ToolError("OPENAI_API_KEY is missing from environment.")
 
-        ffmpeg_exe: str | None = None
-        ffmpeg_error: str | None = None
-        try:
-            ffmpeg_exe = get_ffmpeg_exe()
-        except Exception as exc:  # noqa: BLE001
-            ffmpeg_error = str(exc)
+        ffmpeg_exe = require_binary("ffmpeg", "Install ffmpeg (it also provides ffprobe on most systems).")
+        ffprobe_exe = require_binary("ffprobe", "Install ffprobe (usually via your OS ffmpeg package).")
 
-        input_meta = probe_audio(input_path, verbose=args.verbose)
+        input_meta = probe_audio(input_path, ffprobe_exe=ffprobe_exe, verbose=args.verbose)
 
         output_json = Path(args.output) if args.output else input_path.with_suffix(".json")
 
@@ -376,36 +381,22 @@ def main() -> int:
         normalized_format = input_path.suffix.lstrip(".").lower()
 
         if args.normalize:
-            if not ffmpeg_exe:
-                raise ToolError(
-                    "Normalization requires imageio-ffmpeg, but it is unavailable. "
-                    f"Details: {ffmpeg_error}. Install dependencies from requirements.txt or use --no-normalize."
-                )
             normalized_path = temp_root / "normalized.m4a"
             normalized_format = normalize_audio(input_path, normalized_path, ffmpeg_exe, verbose=args.verbose)
             work_audio = normalized_path if normalized_format == "m4a" else normalized_path.with_suffix(".mp3")
 
-        work_meta = probe_audio(work_audio, verbose=args.verbose)
-        if not ffmpeg_exe:
-            chunks = [
-                ChunkInfo(
-                    index=0,
-                    source_start=0.0,
-                    source_end=work_meta["duration_seconds"] or 0.0,
-                    duration=work_meta["duration_seconds"] or 0.0,
-                    path=work_audio,
-                )
-            ]
-        else:
-            chunks = create_chunks(
-                audio_path=work_audio,
-                duration=work_meta["duration_seconds"],
-                chunk_minutes=args.chunk_minutes,
-                overlap_seconds=args.overlap_seconds,
-                temp_dir=temp_root,
-                ffmpeg_exe=ffmpeg_exe,
-                verbose=args.verbose,
-            )
+        work_meta = probe_audio(work_audio, ffprobe_exe=ffprobe_exe, verbose=args.verbose)
+        if work_meta["duration_seconds"] <= 0.0:
+            raise ToolError("Could not determine audio duration with ffprobe. Check that the input file is valid audio.")
+        chunks = create_chunks(
+            audio_path=work_audio,
+            duration=work_meta["duration_seconds"],
+            chunk_minutes=args.chunk_minutes,
+            overlap_seconds=args.overlap_seconds,
+            temp_dir=temp_root,
+            ffmpeg_exe=ffmpeg_exe,
+            verbose=args.verbose,
+        )
 
         # Ensure each chunk stays below upload limit by splitting oversized chunks.
         final_chunks: list[ChunkInfo] = []
@@ -415,10 +406,6 @@ def main() -> int:
                 final_chunks.append(ChunkInfo(reindex, ch.source_start, ch.source_end, ch.duration, ch.path))
                 reindex += 1
                 continue
-            if not ffmpeg_exe:
-                raise ToolError(
-                    "An input chunk exceeds the 25 MB upload limit and must be split, but imageio-ffmpeg is unavailable."
-                )
             half = max(30.0, ch.duration / 2)
             sub = create_chunks(ch.path, ch.duration, half / 60.0, 0.0, temp_root, ffmpeg_exe, verbose=args.verbose)
             for subc in sub:
@@ -435,6 +422,9 @@ def main() -> int:
         chunks = final_chunks
 
         client = OpenAI()
+        fallback_client = None
+        if os.environ.get("OPENAI_BASE_URL"):
+            fallback_client = OpenAI(base_url="https://api.openai.com/v1")
 
         bootstrap_enabled = not args.no_bootstrap_speakers
         known_names: list[str] = []
@@ -453,6 +443,7 @@ def main() -> int:
                 language=args.language,
                 known_names=known_names if chunk.index > 0 else None,
                 known_refs=known_refs if chunk.index > 0 else None,
+                fallback_client=fallback_client,
             )
             local_segments = parse_segments(response_dict)
 
@@ -462,8 +453,6 @@ def main() -> int:
                     for i, (raw_speaker, seg) in enumerate(chosen.items(), start=1):
                         speaker_name = f"speaker_{i}"
                         ref_path = temp_root / f"bootstrap_{speaker_name}.wav"
-                        if not ffmpeg_exe:
-                            raise ToolError("Speaker bootstrap requires imageio-ffmpeg for reference clip extraction.")
                         export_reference_clip(
                             chunk.path, seg["start"], seg["end"], ref_path, ffmpeg_exe, verbose=args.verbose
                         )
