@@ -42,6 +42,7 @@ export OPENAI_API_KEY="your_api_key_here"
 python meeting2json.py input.m4a
 python meeting2json.py input.m4a --output transcript.json
 python meeting2json.py input.mp3 --language sl
+python meeting2json.py input.wav --model gpt-4o-transcribe-diarize
 ```
 
 ### Markdown transcript
@@ -50,6 +51,7 @@ python meeting2json.py input.mp3 --language sl
 python json2markdown.py transcript.json
 python json2markdown.py transcript.json --output transcript.md
 python json2markdown.py transcript.json --output transcript.md --context meeting_context.txt
+python json2markdown.py transcript.json --context meeting_context.txt --model gpt-5.4-mini
 ```
 
 ### Useful options
@@ -80,6 +82,15 @@ python meeting2json.py input.m4a --no-bootstrap-speakers
 - `--normalize` / `--no-normalize` (default: normalize on)
 - `--verbose`
 
+## `json2markdown.py` options
+
+- positional `input`
+- `--output`
+- `--title`
+- `--compact`
+- `--context`
+- `--model` (default: `gpt-5.4-mini`, used for `--context` repair)
+
 ## JSON output shape
 
 `meeting2json.py` writes one consolidated JSON document with sections like:
@@ -104,8 +115,9 @@ python meeting2json.py input.m4a --no-bootstrap-speakers
   - text body
 
 Optional `--compact` merges nearby consecutive segments by the same speaker.
+`json2markdown.py` also supports `--model` to override the repair model used with `--context` (default: `gpt-5.4-mini`).
 
-When `--context` is supplied, `json2markdown.py` loads `prompts/repair-prompt.txt` and sends the full transcript plus full context text in one Responses API request (`gpt-5.4-mini`) for conservative ASR repair. It is not a summarizer and keeps segment order/timestamps/speaker labels intact.
+When `--context` is supplied, `json2markdown.py` loads `prompts/repair-prompt.txt` and sends the full transcript plus full context text in one Responses API request (default `gpt-5.4-mini`, override with `--model`) for conservative ASR repair. It is not a summarizer and keeps segment order/timestamps/speaker labels intact.
 
 ## Notes and limitations
 

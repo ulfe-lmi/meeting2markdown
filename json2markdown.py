@@ -117,7 +117,9 @@ def apply_repairs(segments: list[dict[str, Any]], repaired_by_id: dict[str, str]
     return patched
 
 
-def repair_segments_with_context(segments: list[dict[str, Any]], context_path: Path, prompt_path: Path) -> list[dict[str, Any]]:
+def repair_segments_with_context(
+    segments: list[dict[str, Any]], context_path: Path, prompt_path: Path, model: str
+) -> list[dict[str, Any]]:
     if not context_path.exists():
         raise ToolError(f"Context file not found: {context_path}")
     if not prompt_path.exists():
@@ -143,7 +145,7 @@ def repair_segments_with_context(segments: list[dict[str, Any]], context_path: P
 
     client = OpenAI()
     response = client.responses.create(
-        model="gpt-5.4-mini",
+        model=model,
         instructions=repair_prompt,
         input=[
             {
@@ -185,6 +187,11 @@ def main() -> int:
     parser.add_argument("--title", default="Meeting transcript")
     parser.add_argument("--compact", action="store_true", help="Merge nearby consecutive segments by same speaker")
     parser.add_argument("--context", help="Path to raw text context file for optional whole-meeting repair")
+    parser.add_argument(
+        "--model",
+        default="gpt-5.4-mini",
+        help="Model used for optional --context repair (default: gpt-5.4-mini)",
+    )
     args = parser.parse_args()
 
     try:
@@ -209,10 +216,11 @@ def main() -> int:
                     segments=segments,
                     context_path=Path(args.context),
                     prompt_path=Path("prompts/repair-prompt.txt"),
+                    model=args.model,
                 )
                 repair_context_used = True
                 repair_context_path = str(Path(args.context))
-                repair_model = "gpt-5.4-mini"
+                repair_model = args.model
             except ToolError as exc:
                 print(f"Warning: context repair failed, rendering original transcript: {exc}", file=sys.stderr)
 
