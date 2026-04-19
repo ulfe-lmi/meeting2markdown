@@ -6,7 +6,7 @@ Small CLI tools for transcribing meeting audio into diarized JSON and rendering 
 
 1. `meeting2json.py`
    - Accepts `.m4a`, `.mp3`, `.wav`
-   - Uses `ffprobe` + `ffmpeg` for inspection/preprocessing/chunking
+   - Uses `ffprobe` + `imageio-ffmpeg` for inspection/preprocessing/chunking
    - Calls OpenAI's transcription API with diarization (`gpt-4o-transcribe-diarize`)
    - Produces one consolidated JSON transcript
 2. `json2markdown.py`
@@ -16,8 +16,10 @@ Small CLI tools for transcribing meeting audio into diarized JSON and rendering 
 ## Prerequisites
 
 - Python 3.10+
-- `ffmpeg` and `ffprobe` available on `PATH`
+- `ffprobe` available on `PATH`
 - `OPENAI_API_KEY` in the environment
+
+`meeting2json.py` resolves `ffmpeg` from `imageio-ffmpeg` automatically (no system `ffmpeg` binary required).
 
 ## Installation
 
@@ -116,8 +118,8 @@ Optional `--compact` merges nearby consecutive segments by the same speaker.
 
 ## Troubleshooting
 
-- **`ffmpeg` / `ffprobe` not found**
-  - Install ffmpeg package for your OS and ensure binaries are on `PATH`.
+- **`ffprobe` not found**
+  - Install ffprobe (typically from your OS ffmpeg package) and ensure it is on `PATH`.
 - **Authentication/API errors**
   - Confirm `OPENAI_API_KEY` is set and valid.
 - **Odd or drifting speaker labels**
