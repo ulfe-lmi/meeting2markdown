@@ -78,7 +78,7 @@ python meeting2json.py input.m4a --no-bootstrap-speakers
 - `--keep-temp`
 - `--temp-dir`
 - `--no-bootstrap-speakers`
-- `--max-bootstrap-speakers` (default: `4`)
+- `--max-bootstrap-speakers` (default: `4`, can be set higher)
 - `--normalize` / `--no-normalize` (default: normalize on)
 - `--verbose`
 
@@ -128,7 +128,7 @@ When `--context` is supplied, `json2markdown.py` loads `prompts/repair-prompt.tx
 - Speaker identity is usually reliable within one API response and best-effort across local chunks.
 - Optional speaker bootstrap extracts short reference clips from chunk 0 and sends them to later chunk requests.
 - Stage 2 context repair is whole-meeting and one-shot: the full transcript and full context file are sent in one request.
-- Known speaker references are limited to up to 4 speakers.
+- Known speaker references are commonly limited to up to 4 speakers by the API. The tool does not hard-cap this value and will warn if you set `--max-bootstrap-speakers` above 4.
 - Reference clips are kept in the recommended 2–10 second range.
 
 ## Troubleshooting

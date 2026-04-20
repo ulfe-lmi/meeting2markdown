@@ -447,6 +447,11 @@ def main() -> int:
             fallback_client = OpenAI(base_url="https://api.openai.com/v1")
 
         bootstrap_enabled = not args.no_bootstrap_speakers
+        if args.max_bootstrap_speakers > 4:
+            print(
+                f"Warning: --max-bootstrap-speakers is set to {args.max_bootstrap_speakers}. "
+                "Known speaker references above 4 may not be supported by the API."
+            )
         known_names: list[str] = []
         known_refs: list[str] = []
         exported_reference_names: set[str] = set()
@@ -472,7 +477,7 @@ def main() -> int:
 
             if chunk.index == 0 and bootstrap_enabled:
                 try:
-                    chosen = pick_bootstrap_segments(local_segments, max(1, min(args.max_bootstrap_speakers, 4)), chunk.duration)
+                    chosen = pick_bootstrap_segments(local_segments, max(1, args.max_bootstrap_speakers), chunk.duration)
                     ordered_chosen = []
                     seen_raw: set[str] = set()
                     for seg in local_segments:
@@ -519,7 +524,7 @@ def main() -> int:
                 if (
                     canonical_speaker not in exported_reference_names
                     and canonical_speaker not in known_names
-                    and len(known_names) < min(args.max_bootstrap_speakers, 4)
+                    and len(known_names) < args.max_bootstrap_speakers
                     and segment_is_reference_candidate(seg, chunk.duration)
                 ):
                     try:
