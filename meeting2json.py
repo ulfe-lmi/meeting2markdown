@@ -336,6 +336,26 @@ def format_display_speaker(raw: str) -> str:
     return f"Speaker {tail}" if tail.isdigit() else raw.replace("_", " ").title()
 
 
+def parse_speaker_number(label: str) -> int | None:
+    cleaned = label.strip().lower().replace("-", "_").replace(" ", "_")
+    if cleaned.startswith("speaker_"):
+        tail = cleaned.split("_")[-1]
+        if tail.isdigit():
+            return int(tail)
+    return None
+
+
+def segment_is_reference_candidate(seg: dict[str, Any], chunk_duration: float) -> bool:
+    start = float(seg.get("start", 0.0))
+    end = float(seg.get("end", start))
+    dur = end - start
+    if dur < 2.0 or dur > 10.0:
+        return False
+    if start <= 0.25 or end >= chunk_duration - 0.25:
+        return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transcribe meeting audio to diarized JSON.")
     parser.add_argument("input", help="Path to .m4a, .mp3, or .wav file")
@@ -429,9 +449,12 @@ def main() -> int:
         bootstrap_enabled = not args.no_bootstrap_speakers
         known_names: list[str] = []
         known_refs: list[str] = []
+        exported_reference_names: set[str] = set()
         bootstrap_reference_speakers: list[str] = []
 
         merged_segments: list[dict[str, Any]] = []
+        raw_alias_to_canonical: dict[str, str] = {}
+        next_speaker_number = 1
 
         for chunk in chunks:
             if args.verbose:
@@ -450,32 +473,75 @@ def main() -> int:
             if chunk.index == 0 and bootstrap_enabled:
                 try:
                     chosen = pick_bootstrap_segments(local_segments, max(1, min(args.max_bootstrap_speakers, 4)), chunk.duration)
-                    for i, (raw_speaker, seg) in enumerate(chosen.items(), start=1):
-                        speaker_name = f"speaker_{i}"
+                    ordered_chosen = []
+                    seen_raw: set[str] = set()
+                    for seg in local_segments:
+                        raw = seg["speaker"]
+                        if raw in chosen and raw not in seen_raw:
+                            ordered_chosen.append((raw, chosen[raw]))
+                            seen_raw.add(raw)
+                    for raw_speaker, seg in ordered_chosen:
+                        speaker_name = f"speaker_{next_speaker_number}"
+                        next_speaker_number += 1
+                        raw_alias_to_canonical[raw_speaker] = speaker_name
                         ref_path = temp_root / f"bootstrap_{speaker_name}.wav"
                         export_reference_clip(
                             chunk.path, seg["start"], seg["end"], ref_path, ffmpeg_exe, verbose=args.verbose
                         )
                         known_names.append(speaker_name)
                         known_refs.append(data_url_for_file(ref_path))
+                        exported_reference_names.add(speaker_name)
                         bootstrap_reference_speakers.append(speaker_name)
                 except Exception:
                     known_names = []
                     known_refs = []
+                    exported_reference_names = set()
                     bootstrap_reference_speakers = []
 
             boundary_start = chunk.source_start
             recent = [s for s in merged_segments if s["end"] >= boundary_start - args.overlap_seconds - 0.25]
 
             for i, seg in enumerate(local_segments):
+                raw_speaker = str(seg["speaker"])
+                parsed_num = parse_speaker_number(raw_speaker)
+                if parsed_num is not None:
+                    canonical_speaker = f"speaker_{parsed_num}"
+                    raw_alias_to_canonical[raw_speaker] = canonical_speaker
+                    if parsed_num >= next_speaker_number:
+                        next_speaker_number = parsed_num + 1
+                elif raw_speaker in raw_alias_to_canonical:
+                    canonical_speaker = raw_alias_to_canonical[raw_speaker]
+                else:
+                    canonical_speaker = f"speaker_{next_speaker_number}"
+                    raw_alias_to_canonical[raw_speaker] = canonical_speaker
+                    next_speaker_number += 1
+
+                if (
+                    canonical_speaker not in exported_reference_names
+                    and canonical_speaker not in known_names
+                    and len(known_names) < min(args.max_bootstrap_speakers, 4)
+                    and segment_is_reference_candidate(seg, chunk.duration)
+                ):
+                    try:
+                        ref_path = temp_root / f"bootstrap_{canonical_speaker}.wav"
+                        export_reference_clip(
+                            chunk.path, seg["start"], seg["end"], ref_path, ffmpeg_exe, verbose=args.verbose
+                        )
+                        known_names.append(canonical_speaker)
+                        known_refs.append(data_url_for_file(ref_path))
+                        exported_reference_names.add(canonical_speaker)
+                        bootstrap_reference_speakers.append(canonical_speaker)
+                    except Exception:
+                        pass
+
                 global_seg = {
                     "id": f"chunk{chunk.index}_seg{i}",
                     "chunk_index": chunk.index,
                     "start": round(chunk.source_start + seg["start"], 3),
                     "end": round(chunk.source_start + seg["end"], 3),
-                    "speaker": seg["speaker"],
-                    "raw_speaker": seg["speaker"],
-                    "display_speaker": format_display_speaker(seg["speaker"]),
+                    "speaker": canonical_speaker,
+                    "raw_speaker": raw_speaker,
+                    "display_speaker": format_display_speaker(canonical_speaker),
                     "text": seg["text"],
                 }
                 in_overlap_lead = chunk.index > 0 and global_seg["start"] <= chunk.source_start + args.overlap_seconds + 0.25
